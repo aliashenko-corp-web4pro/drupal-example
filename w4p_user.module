@@ -1,0 +1,260 @@
+<?php
+/**
+ * @file
+ * Manages w4p user-related features.
+ */
+
+/**
+ * Define role id for advanced gating.
+ */
+define('W4P_UNVERIFIED_RID', 7);
+
+/**
+ * Implements hook_ctools_plugin_directory().
+ */
+function w4p_user_ctools_plugin_directory($module, $plugin) {
+  if ($module == 'addressfield') {
+    return 'plugins/' . $plugin;
+  }
+}
+
+/**
+ * Implements hook_form_FORM_ID_alter().
+ */
+function w4p_user_form_user_profile_form_alter(&$form, &$form_state, $form_id) {
+  // Make sure only admins can see system fields on user.
+  $system_fields = array(
+    'field_w4p_legacy_id',
+    'field_w4p_source_id',
+    'field_w4p_privacy_settings',
+    'field_w4p_advantage_id',
+    'field_w4p_legacy_node_access',
+    'field_w4p_transaction_id',
+  );
+  foreach ($system_fields as $field_name) {
+    $form[$field_name]['#access'] = user_access('administer users');
+  }
+}
+
+/**
+ * Implements hook_form_alter().
+ */
+function w4p_user_form_alter(&$form, &$form_state, $form_id) {
+  if (arg(0) == 'publish') {
+    $form['#after_build'][] = 'w4p_user_remove_captcha';
+    return;
+  }
+
+  // Change 'username' to 'display name'
+  switch ($form_id) {
+    case 'user_login_block':
+      break;
+
+    case 'user_login':
+      $form['name']['#title'] = t('Display name or e-mail');
+      break;
+
+    case 'user_register_form':
+      $module_js_path = drupal_get_path('module', 'w4p_user') . '/js/';
+      drupal_add_js($module_js_path . 'w4p_user_register_terms.js');
+      $form['terms'] = array(
+        '#prefix' => '<div id="register_terms">',
+        '#markup' =>
+        t("By clicking below, I acknowledge and agree to w4p's !terms_url
+          and to w4p's use of my contact information to communicate with me
+          about w4p's or its third party partners products, services,
+          events and research opportunities. w4p's use of the information
+          I provide will be consistent with w4p's !policy_url",
+          array(
+            '!terms_url' => _w4p_user_get_terms_of_service_link(),
+            '!policy_url' => _w4p_user_get_privacy_policy_link(),
+          )
+        ),
+        '#suffix' => '</div>',
+        '#weight' => 5,
+      );
+
+      $form['terms_canadians'] = array(
+        '#type' => 'checkbox',
+        '#weight' => 5,
+        '#default_value' => TRUE,
+        '#title' =>
+        t("I acknowledge and agree to w4p's !terms_url and to w4p's use
+         of my contact information to communicate with me about offerings by
+         w4p, its brands, affiliates and/or third-party partners,
+         consistent with w4p's !policy_url",
+          array(
+            '!terms_url' => _w4p_user_get_terms_of_service_link(),
+            '!policy_url' => _w4p_user_get_privacy_policy_link(),
+          )
+        ),
+        '#element_validate' => array('w4p_user_check_terms_canadians'),
+        '#error_msg' => t('Please acknowledge and agree to the Terms of
+          Service and Privacy Policy before continuing.'),
+      );
+      // Set label for name field.
+      $form['account']['name']['#title'] = t('User name');
+      // Set label for Password field.
+      $form['account']['pass']['#title'] = t('Password');
+      // Set label for Email field.
+      $form['account']['mail']['#title'] = t('Email Address');
+      // Create password field without password confirm.
+      $form['account']['pass']['#type'] = 'password';
+      // Remove, First, middle and last name from registration forms.
+      $form['field_w4p_profile']['und'][0]['name_block']['#access'] = FALSE;
+      // Delete description from password field.
+      unset($form['account']['pass']['#description']);
+      break;
+
+    case 'user_profile_form':
+      if (array_key_exists(w4p_AUTHOR_RID, $form['#user']->roles)) {
+        $form['field_w4p_profile']['und'][0]['name_block']['middle_name']['#access'] = TRUE;
+      }
+      else {
+        $form['field_w4p_profile']['und'][0]['name_block']['middle_name']['#access'] = FALSE;
+      }
+      $form['account']['name']['#title'] = t('Display name');
+      break;
+
+    case 'user_pass':
+      $form['name']['#title'] = t('Display name or e-mail address');
+      break;
+  }
+}
+
+/**
+ * After build function which removes captcha from forms when they called from services.
+ */
+function w4p_user_remove_captcha(&$form, &$form_state) {
+  if (isset($form['captcha'])) {
+    unset($form['captcha']);
+  }
+  return $form;
+}
+
+/**
+ * Function which provides link to w4p Terms of Service.
+ */
+function _w4p_user_get_terms_of_service_link() {
+  return l(
+    t('Terms of Service'),
+    'http://www.w4p.com/terms-of-service/',
+    array(
+      'attributes' => array(
+        'target' => '_blank',
+      ),
+    )
+  );
+}
+
+/**
+ * Function which provides link to w4p Privacy Policy.
+ */
+function _w4p_user_get_privacy_policy_link() {
+  return l(
+    t('Privacy Policy'),
+    'http://www.w4p.com/privacy-policy/',
+    array(
+      'attributes' => array(
+        'target' => '_blank',
+      ),
+    )
+  );
+}
+
+/**
+ * Validation function to terms_canadians field in register form.
+ */
+function w4p_user_check_terms_canadians($element, &$form_state) {
+  if (empty($element['#value'])) {
+    form_error($element, $element['#error_msg']);
+  }
+}
+
+/**
+ * Implements hook_entity_info_alter().
+ */
+function w4p_user_entity_info_alter(&$entity_info) {
+  // Add view mode private profile.
+  $entity_info['user']['view modes']['w4p_private_profile'] = array(
+    'label' => t('Private profile'),
+    'custom settings' => TRUE,
+  );
+}
+
+/**
+ * Implements hook_entity_view_mode_alter().
+ */
+function w4p_user_entity_view_mode_alter(&$view_mode, $context) {
+  // Switch to 'Private profile' view mode if public profile is not checked.
+  if ($view_mode == 'full' && $context['entity_type'] == 'user') {
+    $account = $context['entity'];
+    if (empty($account->field_w4p_display_profile) || $account->field_w4p_display_profile['und'][0]['value'] == 0) {
+      $view_mode = 'w4p_private_profile';
+      drupal_set_message(t("This is a private profile.<br>This message will not be displayed in further sprints."));
+    }
+  }
+}
+
+/**
+ * Implements hook_field_attach_presave().
+ *
+ * Add support for more fields in addressfield.
+ */
+function w4p_user_field_attach_presave($entity_type, $entity) {
+  if ($entity_type == 'user' && isset($entity->field_w4p_profile)) {
+    $data = array();
+    $language = !empty($entity->language) ? $entity->language : LANGUAGE_NONE;
+    $default_fields = array('name_line', 'first_name', 'last_name', 'organisation_name', 'country', 'administrative_area', 'sub_administrative_area', 'locality', 'dependent_locality', 'postal_code', 'thoroughfare', 'premise', 'sub_premise');
+    if (isset ($entity->field_w4p_profile[$language][0])) {
+      foreach ($entity->field_w4p_profile[$language][0] as $field => $value) {
+        // Compare fields with addressfield default fields
+        // and store any additional fields in data.
+        if (!in_array($field, $default_fields)) {
+          // Store additional field value.
+          $data[$field] = $value;
+        }
+      }
+      if ($data) {
+        $entity->field_w4p_profile[$language][0]['data'] = serialize($data);
+      }
+    }
+  }
+}
+
+/**
+ * Implements hook_field_attach_load().
+ */
+function w4p_user_field_attach_load($entity_type, $entities, $age, $options) {
+  if ($entity_type == 'user') {
+    foreach ($entities as $key => $entity) {
+      $language = !empty($entity->language) ? $entity->language : LANGUAGE_NONE;
+      if (!isset($entity->field_w4p_profile)) continue;
+      if (!empty($entity->field_w4p_profile[$language][0]['data'])) {
+        // Unserialize data, else skip if string.
+        if ($data = unserialize($entity->field_w4p_profile[$language][0]['data'])) {
+          foreach ($data as $field_key => $field_value) {
+            // Store unserialized data values in additional fields.
+            $entities[$key]->field_w4p_profile[$language][0][$field_key] = $field_value;
+          }
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Implements hook_addressfield_default_values_alter().
+ */
+function w4p_user_addressfield_default_values_alter(&$default_values, $context) {
+  $default_values['middle_name'] = '';
+}
+
+/**
+ * Implements hook_field_widget_addressfield_standard_form_alter().
+ */
+function w4p_user_field_widget_addressfield_standard_form_alter(&$element, &$form_state, $context) {
+  if ($element['#field_name'] == 'field_w4p_profile') {
+    $element['#type'] = 'container';
+  }
+}
